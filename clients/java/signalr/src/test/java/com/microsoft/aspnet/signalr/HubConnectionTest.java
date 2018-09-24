@@ -6,6 +6,7 @@ package com.microsoft.aspnet.signalr;
 import static org.junit.jupiter.api.Assertions.*;
 
 import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
@@ -841,11 +842,30 @@ class HubConnectionTest {
     @Test
     public void cannotSendBeforeStart() throws Exception {
         Transport mockTransport = new MockTransport();
-        HubConnection hubConnection = new HubConnection("http://example.com", mockTransport);
+        HubConnection hubConnection = new HubConnection("http://example.com", mockTransport, true);
         assertEquals(HubConnectionState.DISCONNECTED, hubConnection.getConnectionState());
 
         Throwable exception = assertThrows(HubException.class, () -> hubConnection.send("inc"));
         assertEquals("The 'send' method cannot be called if the connection is not active", exception.getMessage());
+    }
+
+    @Test
+    public void negotiateSentOnStart() throws Exception {
+        TestHttpClient client = new TestHttpClient()
+        .on("POST", (req) -> CompletableFuture.completedFuture(new HttpResponse(404, "", "")));
+
+        HubConnection hubConnection = new HubConnectionBuilder()
+            .withUrl("http://example.com")
+            .configureHttpClient(client)
+            .build();
+
+        try {
+            hubConnection.start().get();
+        } catch(Exception ex) {}
+
+        List<HttpRequest> sentRequests = client.getSentRequests();
+        assertEquals(1, sentRequests.size());
+        assertEquals("http://example.com/negotiate", sentRequests.get(0).url);
     }
 
     private class MockTransport implements Transport {
@@ -853,12 +873,12 @@ class HubConnectionTest {
         private ArrayList<String> sentMessages = new ArrayList<>();
 
         @Override
-        public CompletableFuture start() {
+        public CompletableFuture<Void> start() {
             return CompletableFuture.completedFuture(null);
         }
 
         @Override
-        public CompletableFuture send(String message) {
+        public CompletableFuture<Void> send(String message) {
             sentMessages.add(message);
             return CompletableFuture.completedFuture(null);
         }
@@ -874,7 +894,7 @@ class HubConnectionTest {
         }
 
         @Override
-        public CompletableFuture stop() {
+        public CompletableFuture<Void> stop() {
             return CompletableFuture.completedFuture(null);
         }
 
