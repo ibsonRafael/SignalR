@@ -9,6 +9,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
@@ -27,7 +28,6 @@ public class HubConnection {
     private Logger logger;
     private List<Consumer<Exception>> onClosedCallbackList;
     private boolean skipNegotiate = false;
-    private NegotiateResponse negotiateResponse;
     private String accessToken;
     private Map<String, String> headers = new HashMap<>();
     private ConnectionState connectionState = null;
@@ -113,27 +113,32 @@ public class HubConnection {
         }
     }
 
-    private NegotiateResponse handleNegotiate() throws IOException {
-        accessToken = (negotiateResponse == null) ? null : negotiateResponse.getAccessToken();
-        negotiateResponse = Negotiate.processNegotiate(url, accessToken);
+    private CompletableFuture<NegotiateResponse> handleNegotiate() throws IOException, InterruptedException, ExecutionException {
+        HttpClient httpClient = new DefaultHttpClient();
+        HttpRequest request = new HttpRequest();
+        request.headers = this.headers;
 
-        if (negotiateResponse.getConnectionId() != null) {
-            if (url.contains("?")) {
-                url = url + "&id=" + negotiateResponse.getConnectionId();
-            } else {
-                url = url + "?id=" + negotiateResponse.getConnectionId();
+        return httpClient.post(Negotiate.resolveNegotiateUrl(url), request).thenCompose((response) -> {
+            NegotiateResponse negotiateResponse = new NegotiateResponse(response.getContent());
+
+            if (negotiateResponse.getConnectionId() != null) {
+                if (url.contains("?")) {
+                    url = url + "&id=" + negotiateResponse.getConnectionId();
+                } else {
+                    url = url + "?id=" + negotiateResponse.getConnectionId();
+                }
             }
-        }
 
-        if (negotiateResponse.getAccessToken() != null) {
-            this.headers.put("Authorization", "Bearer " + negotiateResponse.getAccessToken());
-        }
+            if (negotiateResponse.getAccessToken() != null) {
+                this.headers.put("Authorization", "Bearer " + negotiateResponse.getAccessToken());
+            }
 
-        if (negotiateResponse.getRedirectUrl() != null) {
-            this.url = this.negotiateResponse.getRedirectUrl();
-        }
+            if (negotiateResponse.getRedirectUrl() != null) {
+                this.url = negotiateResponse.getRedirectUrl();
+            }
 
-        return negotiateResponse;
+            return CompletableFuture.completedFuture(negotiateResponse);
+        });
     }
 
     public HubConnection(String url, Transport transport, Logger logger) {
@@ -192,10 +197,12 @@ public class HubConnection {
             return CompletableFuture.completedFuture(null);
         }
         if (!skipNegotiate) {
+            NegotiateResponse negotiateResponse = null;
             int negotiateAttempts = 0;
             do {
-                accessToken = (negotiateResponse == null) ? null : negotiateResponse.getAccessToken();
-                negotiateResponse = handleNegotiate();
+                accessToken = (negotiateResponse == null) ? accessToken : negotiateResponse.getAccessToken();
+                this.headers.put("Authorization", "Bearer " + accessToken);
+                negotiateResponse = handleNegotiate().get();
                 negotiateAttempts++;
             } while (negotiateResponse.getRedirectUrl() != null && negotiateAttempts < MAX_NEGOTIATE_ATTEMPTS);
             if (!negotiateResponse.getAvailableTransports().contains("WebSockets")) {
